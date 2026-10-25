@@ -1809,6 +1809,17 @@ func (s *levelsController) keySplits(numPerTable int, prefix []byte) []string {
 }
 
 // checkPartitionOverflow synchronously promotes any partition at `level` whose total size exceeds its quota.
+//
+// Locking invariant: lh's RWMutex must NOT be held when promotePartition is
+// called, because promotePartition takes lh.Lock() itself and sync.RWMutex is
+// not re-entrant (holding RLock here deadlocked the memtable-flush goroutine).
+// The overflowing partition ids are therefore collected under RLock and the
+// lock is released before any promotion. This is safe because promotePartition
+// re-reads and detaches lh.partitionedTables[pid] under lh.Lock(): a partition
+// that changed in between is promoted with its current contents or found empty
+// (no-op). checkPartitionOverflow only runs on the memtable-flush goroutine
+// (directly, and via promotePartition's recursion into level+1), so two
+// promotions of the same partition never interleave.
 func (s *levelsController) checkPartitionOverflow(level int) {
     fanOut := s.kv.opt.PartitionFanOut
     if fanOut == 0 {
@@ -1825,17 +1836,22 @@ func (s *levelsController) checkPartitionOverflow(level int) {
 
     lh := s.levels[level]
     lh.RLock()
-    defer lh.RUnlock()
-
+    var overflow []int
     for pid, tbls := range lh.partitionedTables {
         var sum int64
         for _, t := range tbls {
             sum += int64(t.OnDiskSize())
         }
         if sum > quota {
-            if err := s.promotePartition(level, pid); err != nil {
-                s.kv.opt.Warningf("partition compaction failed L%d pid=%d: %v", level, pid, err)
-			}
+            overflow = append(overflow, pid)
+        }
+    }
+    lh.RUnlock()
+
+    sort.Ints(overflow) // map iteration order is random; promote deterministically
+    for _, pid := range overflow {
+        if err := s.promotePartition(level, pid); err != nil {
+            s.kv.opt.Warningf("partition compaction failed L%d pid=%d: %v", level, pid, err)
         }
     }
 }
