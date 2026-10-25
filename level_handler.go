@@ -74,6 +74,20 @@ func (s *levelHandler) initTables(tables []*table.Table) {
 	}
 }
 
+func (s *levelHandler) initPartitionedTables(tables []*table.Table) {
+	s.Lock()
+	defer s.Unlock()
+	s.totalSize = 0
+	for _, t := range tables {
+		pid := int(getPartitionID(s.level, t.Smallest(), s.db.opt.PartitionFanOut))
+		s.partitionedTables[pid] = append(s.partitionedTables[pid], t)
+		s.totalSize += int64(t.OnDiskSize())
+	}
+	for _, tbls := range s.partitionedTables {
+		sort.Slice(tbls, func(i, j int) bool { return tbls[i].ID() < tbls[j].ID() })
+	}
+}
+
 // deleteTables remove tables idx0, ..., idx1-1.
 func (s *levelHandler) deleteTables(toDel []*table.Table) error {
 	s.Lock() // s.Unlock() below
@@ -232,6 +246,13 @@ func (s *levelHandler) close() error {
 	for _, t := range s.tables {
 		if closeErr := t.Close(-1); closeErr != nil && err == nil {
 			err = closeErr
+		}
+	}
+	for _, tbls := range s.partitionedTables {
+		for _, t := range tbls {
+			if closeErr := t.Close(-1); closeErr != nil && err == nil {
+				err = closeErr
+			}
 		}
 	}
 	return y.Wrap(err, "levelHandler.close")
