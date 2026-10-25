@@ -1857,6 +1857,35 @@ func (s *levelsController) checkPartitionOverflow(level int) {
 	}
 }
 
+func (s *levelsController) flattenPartitions() error {
+	s.partitionMu.Lock()
+	defer s.partitionMu.Unlock()
+	deepest := -1
+	for i, lh := range s.levels {
+		if lh.getTotalSize() > 0 {
+			deepest = i
+		}
+	}
+	for l := 0; l < deepest; l++ {
+		lh := s.levels[l]
+		lh.RLock()
+		pids := make([]int, 0, len(lh.partitionedTables))
+		for pid, tbls := range lh.partitionedTables {
+			if len(tbls) > 0 {
+				pids = append(pids, pid)
+			}
+		}
+		lh.RUnlock()
+		sort.Ints(pids)
+		for _, pid := range pids {
+			if err := s.promotePartition(l, pid, true); err != nil {
+				return y.Wrapf(err, "flattening L%d pid=%d", l, pid)
+			}
+		}
+	}
+	return nil
+}
+
 func (s *levelsController) promotePartition(level, pid int, force bool) error {
 	fanOut := s.kv.opt.PartitionFanOut
 	lh := s.levels[level]
