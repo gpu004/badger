@@ -194,7 +194,7 @@ func getPartitionID(level int, key []byte, fanOut int) uint32 {
     for i := 0; i < level+1; i++ {
         parts *= fanOut
     }
-    h := y.Hash(key)
+    h := y.Hash(y.ParseKey(key))
     return (h % uint32(parts))
 }
 
@@ -1708,7 +1708,11 @@ type TableInfo struct {
 func (s *levelsController) getTableInfo() (result []TableInfo) {
 	for _, l := range s.levels {
 		l.RLock()
-		for _, t := range l.tables {
+		tables := append([]*table.Table(nil), l.tables...)
+		for _, tbls := range l.partitionedTables {
+			tables = append(tables, tbls...)
+		}
+		for _, t := range tables {
 			info := TableInfo{
 				ID:               t.ID(),
 				Level:            l.level,
